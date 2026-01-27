@@ -1,0 +1,4 @@
+.venv
+bot_session_db.session
+/userbot/user_session.session
+.env
