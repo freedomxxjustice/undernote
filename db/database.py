@@ -16,7 +16,6 @@ class User(Model):
 
 async def init_db():
     db_url = os.getenv('DB_URL', 'sqlite://db.sqlite3')
-    # Use 'db.database' because the file is in the 'db' folder
     await Tortoise.init(
         db_url=db_url,
         modules={'models': ['db.database']}
