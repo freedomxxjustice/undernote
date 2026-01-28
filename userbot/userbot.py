@@ -8,8 +8,8 @@ from telethon import TelegramClient, events, functions, types
 from telethon.sessions import StringSession
 from dotenv import load_dotenv
 
-# IMPORTS FROM DB (Fixing the error)
-from db.database import User
+# IMPORTS FROM DB
+from db.database import User, init_db  # <--- Added init_db
 
 # Load environment variables
 load_dotenv()
@@ -39,7 +39,6 @@ async def register_user(event):
     sender = await event.get_sender()
     uid = sender.id if sender else event.sender_id
     
-    # Using the imported User model from db.database
     user, _ = await User.get_or_create(
         id=uid,
         defaults={
@@ -89,8 +88,19 @@ async def main_handler(event):
 
     user = await register_user(event)
 
-    # PREMIUM CHECK
-    if not user.is_premium:
+    # 1. PREMIUM CHECK (With Expiry Logic)
+    is_subscription_active = (
+        user.is_premium and 
+        user.premium_expiry_date and 
+        user.premium_expiry_date >= date.today()
+    )
+
+    # If status says premium but date is expired, revoke it
+    if user.is_premium and not is_subscription_active:
+        user.is_premium = False
+        await user.save()
+
+    if not is_subscription_active:
         now = time.time()
         last_warning = non_premium_cooldowns.get(user.id, 0)
         
@@ -98,10 +108,16 @@ async def main_handler(event):
             return 
         
         non_premium_cooldowns[user.id] = now
-        await event.respond("🔒 **This bot is for Premium users only.**\n\nPlease use the free version or upgrade to continue.")
+        # Inform them to use the main bot to upgrade
+        bot_username = os.getenv('BOT_USERNAME', 'YourMainBot') 
+        await event.respond(
+            f"🔒 **Premium Only**\n\n"
+            f"This service is exclusive to Premium users.\n"
+            f"Please go to @{bot_username} to upgrade your subscription."
+        )
         return
 
-    # Handle Commands
+    # 2. Handle Commands
     if event.text and event.text.startswith('/'):
         if event.text.startswith('/start'):
             welcome_text = (
@@ -115,7 +131,7 @@ async def main_handler(event):
     if not event.video:
         return
 
-    # Processing Logic
+    # 3. Processing Logic
     duration = 0
     if hasattr(event.video, 'attributes'):
         for attr in event.video.attributes:
@@ -143,6 +159,7 @@ async def main_handler(event):
         await status_msg.edit("⬆️ **Uploading...**")
         uploaded_file = await client.upload_file(path_out)
 
+        # Ensure circular video attribute is set
         video_attribute = types.DocumentAttributeVideo(
             duration=duration, 
             w=400, h=400, 
@@ -178,7 +195,7 @@ async def main_handler(event):
 
 # ================= STARTUP =================
 async def main():
-    # Database is already initialized by main.py, so we skip init_db() here
+    print("Initializing Database...")
     
     print("Connecting Userbot to Telegram...")
     await client.connect()
