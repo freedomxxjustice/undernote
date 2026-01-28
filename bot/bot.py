@@ -151,7 +151,7 @@ async def start_handler(event):
         f"✨ **Hello, {user.first_name}!**\n\n"
         "I create round video notes for you with saving of entered caption.\n"
         "Send me a video and text in one message to get started!\n\n"
-        "*this bot doesn't support premium emojis, instead consider buying premium subscription (covering premium account expenses) and use @roundnote!*\n\n"
+        "*this bot doesn't support premium emojis, instead consider buying premium subscription (covering premium account expenses) and use @undernote!*\n\n"
         "👇 **Choose an option below:**"
     )
     
@@ -174,7 +174,7 @@ async def menu_handler(event):
             f"✨ **Hello, {user.first_name}!**\n\n"
             "I create round video notes for you with saving of entered caption.\n"
             "Send me a video and text in one message to get started!\n\n"
-            "*this bot doesn't support premium emojis, instead consider buying premium subscription (covering premium account expenses) and use @roundnote!*\n\n"
+            "*this bot doesn't support premium emojis, instead consider buying premium subscription (covering premium account expenses) and use @undernote!*\n\n"
             "👇 **Choose an option below:**"
         )
         buttons = [
@@ -205,7 +205,7 @@ async def menu_handler(event):
                 "💎 **Premium Status Active**\n\n"
                 "✅ You are already a Premium user!\n"
                 f"📅 Expires on: **{expiry_str}**\n\n"
-                "Enjoy unlimited video conversions, priority processing and access to @roundnote."
+                "Enjoy unlimited video conversions, priority processing and access to @undernote."
             )
             buttons = [[Button.inline("🔙 Back", data=b"menu_main")]]
             await event.edit(text, buttons=buttons)
