@@ -8,13 +8,10 @@ from telethon import TelegramClient, events, functions, types
 from telethon.sessions import StringSession
 from dotenv import load_dotenv
 
-# IMPORTS FROM DB
-from db.database import User, init_db  # <--- Added init_db
+from db.database import User
 
-# Load environment variables
 load_dotenv()
 
-# ================= CONFIGURATION =================
 API_ID = int(os.getenv('API_ID', 0))       
 API_HASH = os.getenv('API_HASH')
 DB_URL = os.getenv('DB_URL')
@@ -26,14 +23,11 @@ if not API_ID or not API_HASH:
 if not STRING_SESSION:
     raise ValueError("STRING_SESSION env variable is missing! Run generate_session.py first.")
 
-# Initialize Client
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
-# Anti-Spam Cache
 non_premium_cooldowns = {}
 COOLDOWN_SECONDS = 300  # 5 Minutes
 
-# ================= DATABASE HELPERS =================
 async def register_user(event):
     """Ensures user exists in DB on every interaction."""
     sender = await event.get_sender()
@@ -48,7 +42,6 @@ async def register_user(event):
     )
     return user
 
-# ================= VIDEO PROCESSING (FFMPEG) =================
 def process_video_v2(input_path, output_path):
     """
     High-performance cropping and resizing using FFmpeg.
@@ -79,7 +72,6 @@ def process_video_v2(input_path, output_path):
         print(f"FFmpeg Error: {e}")
         return False
 
-# ================= HANDLERS =================
 
 @client.on(events.NewMessage)
 async def main_handler(event):
@@ -88,14 +80,12 @@ async def main_handler(event):
 
     user = await register_user(event)
 
-    # 1. PREMIUM CHECK (With Expiry Logic)
     is_subscription_active = (
         user.is_premium and 
         user.premium_expiry_date and 
         user.premium_expiry_date >= date.today()
     )
 
-    # If status says premium but date is expired, revoke it
     if user.is_premium and not is_subscription_active:
         user.is_premium = False
         await user.save()
@@ -108,7 +98,6 @@ async def main_handler(event):
             return 
         
         non_premium_cooldowns[user.id] = now
-        # Inform them to use the main bot to upgrade
         bot_username = os.getenv('BOT_USERNAME', 'YourMainBot') 
         await event.respond(
             f"🔒 **Premium Only**\n\n"
@@ -117,13 +106,12 @@ async def main_handler(event):
         )
         return
 
-    # 2. Handle Commands
     if event.text and event.text.startswith('/'):
         if event.text.startswith('/start'):
             welcome_text = (
                 f"✨ **Hello, {user.first_name}!**\n\n"
-                "I am ready to create Premium Video Notes.\n"
-                "Just send me a video!"
+                "I am ready to create video notes with any caption you send!.\n"
+                "Just send me a video and a caption in one message!"
             )
             await event.respond(welcome_text)
         return
@@ -131,7 +119,6 @@ async def main_handler(event):
     if not event.video:
         return
 
-    # 3. Processing Logic
     duration = 0
     if hasattr(event.video, 'attributes'):
         for attr in event.video.attributes:
@@ -159,7 +146,6 @@ async def main_handler(event):
         await status_msg.edit("⬆️ **Uploading...**")
         uploaded_file = await client.upload_file(path_out)
 
-        # Ensure circular video attribute is set
         video_attribute = types.DocumentAttributeVideo(
             duration=duration, 
             w=400, h=400, 
@@ -193,7 +179,6 @@ async def main_handler(event):
                 try: os.remove(p)
                 except: pass
 
-# ================= STARTUP =================
 async def main():
     print("Initializing Database...")
     

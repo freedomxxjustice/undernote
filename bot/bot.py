@@ -149,8 +149,9 @@ async def start_handler(event):
     
     text = (
         f"✨ **Hello, {user.first_name}!**\n\n"
-        "I create round video notes for you.\n"
-        "Send me a video to get started!\n\n"
+        "I create round video notes for you with saving of entered caption.\n"
+        "Send me a video and text in one message to get started!\n\n"
+        "*this bot doesn't support premium emojis, instead consider buying premium subscription (covering premium account expenses) and use @roundnote!*\n\n"
         "👇 **Choose an option below:**"
     )
     
@@ -171,8 +172,9 @@ async def menu_handler(event):
     if data == "menu_main":
         text = (
             f"✨ **Hello, {user.first_name}!**\n\n"
-            "I create round video notes for you.\n"
-            "Send me a video to get started!\n\n"
+            "I create round video notes for you with saving of entered caption.\n"
+            "Send me a video and text in one message to get started!\n\n"
+            "*this bot doesn't support premium emojis, instead consider buying premium subscription (covering premium account expenses) and use @roundnote!*\n\n"
             "👇 **Choose an option below:**"
         )
         buttons = [
@@ -203,7 +205,7 @@ async def menu_handler(event):
                 "💎 **Premium Status Active**\n\n"
                 "✅ You are already a Premium user!\n"
                 f"📅 Expires on: **{expiry_str}**\n\n"
-                "Enjoy unlimited video conversions and priority processing."
+                "Enjoy unlimited video conversions, priority processing and access to @roundnote."
             )
             buttons = [[Button.inline("🔙 Back", data=b"menu_main")]]
             await event.edit(text, buttons=buttons)
@@ -217,6 +219,7 @@ async def menu_handler(event):
                 "✅ Unlimited daily video conversions\n"
                 "✅ Priority processing\n"
                 "✅ No ads\n\n"
+                "✅ !!! Access to @undernote bot, that supports premium emojis as captions\n\n"
                 "**Select a payment method:**\n"
                 "• 🇷🇺 RUB: 99₽ (via Crypto)\n"
                 "• 🌍 USD: $1.70 (via Crypto)\n"
