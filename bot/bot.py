@@ -656,7 +656,8 @@ async def ad_builder_handler(event):
             "Send **/confirm_broadcast** to start.\n"
             "Send **/cancel** to stop."
         )
-        @client.on(events.NewMessage(pattern='/confirm_broadcast'))
+
+@client.on(events.NewMessage(pattern='/confirm_broadcast'))
 async def execute_broadcast(event):
     """Step 5: Execute the sending loop."""
     sender_id = event.sender_id
