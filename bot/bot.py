@@ -4,6 +4,7 @@ import random
 import asyncio
 import aiohttp
 from telethon import TelegramClient, events, functions, types, Button
+from telethon.errors import UserIsBlockedError, FloodWaitError
 import subprocess
 from dotenv import load_dotenv
 from db.database import User
@@ -16,13 +17,34 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN') 
 DB_URL = os.getenv('DB_URL')
 ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin') 
+ADMIN_ID = os.getenv('ADMIN_ID', '012345678') 
 
 if not API_ID or not BOT_TOKEN:
     raise ValueError("CRITICAL ERROR: .env file is missing or empty!")
 
 client = TelegramClient('bot_session_db', API_ID, API_HASH)
+ad_states = {}
+INVOICE_FILE = "processed_invoices.txt"
 
-processed_invoices = set()
+def load_processed_invoices():
+    """Loads invoice IDs from a file on startup."""
+    if not os.path.exists(INVOICE_FILE):
+        return set()
+    with open(INVOICE_FILE, "r") as f:
+        # Read lines, strip whitespace, and return as a set
+        return set(line.strip() for line in f if line.strip())
+
+def save_invoice_id(invoice_id):
+    """Appends a new invoice ID to the file."""
+    try:
+        with open(INVOICE_FILE, "a") as f:
+            f.write(f"{invoice_id}\n")
+    except Exception as e:
+        print(f"Error saving invoice ID: {e}")
+
+# Initialize the set from the file instead of creating an empty one
+processed_invoices = load_processed_invoices()
+print(f"📂 Loaded {len(processed_invoices)} processed invoices from file.")
 
 async def register_user(event):
     """Ensures user exists in DB on every interaction."""
@@ -78,7 +100,6 @@ async def create_crypto_invoice(amount, currency, description, payload):
     except Exception as e:
         print(f"CryptoBot Connection Error: {e}")
         return None
-
 async def check_crypto_payments():
     """
     Background task: Checks for PAID invoices every 30 seconds.
@@ -86,11 +107,11 @@ async def check_crypto_payments():
     print("✅ Crypto Payment Monitor Started...")
     url = "https://pay.crypt.bot/api/getInvoices"
     headers = {'Crypto-Pay-API-Token': CRYPTO_BOT_TOKEN}
-    
 
     while True:
         try:
             async with aiohttp.ClientSession() as session:
+                # We fetch the last 20 paid invoices
                 params = {'status': 'paid', 'count': 20}
                 async with session.get(url, headers=headers, params=params) as response:
                     data = await response.json()
@@ -99,22 +120,24 @@ async def check_crypto_payments():
                         invoices = data['result']['items']
                         
                         for inv in invoices:
-                            invoice_id = inv['invoice_id']
+                            invoice_id = str(inv['invoice_id']) # Ensure it's a string
                             payload = inv.get('payload', '')
-                            paid_at_str = inv.get('paid_at') 
 
+                            # 1. Check if we already processed this ID
                             if invoice_id in processed_invoices:
                                 continue
                             
+                            # 2. Add to memory AND save to file immediately
                             processed_invoices.add(invoice_id)
+                            save_invoice_id(invoice_id)
                             
+                            # 3. Process the premium activation
                             if payload and payload.startswith('premium_sub_'):
                                 try:
                                     user_id = int(payload.split('_')[-1])
                                     
                                     user = await User.get_or_none(id=user_id)
                                     if user:
-
                                         user.is_premium = True
                                         
                                         current_expiry = user.premium_expiry_date
@@ -140,8 +163,7 @@ async def check_crypto_payments():
             
         except Exception as e:
             print(f"Crypto Monitor Error: {e}")
-            await asyncio.sleep(30) 
-
+            await asyncio.sleep(30)
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
@@ -319,6 +341,10 @@ def process_video_v2(input_path, output_path):
 
 @client.on(events.NewMessage)
 async def video_handler(event):
+
+    if event.sender_id in ad_states:
+        return
+
     if event.text and event.text.startswith('/') or not event.video or not event.is_private:
         return
 
@@ -464,6 +490,224 @@ async def raw_payment_handler(event):
 
                 except Exception as e:
                     print(f"CRITICAL ERROR in Payment Handler: {e}")
+
+
+@client.on(events.NewMessage(pattern='/broadcast'))
+async def start_broadcast_handler(event):
+    """Step 1: Admin starts the broadcast sequence."""
+    user = await register_user(event)
+    
+    # Security: Check if sender is ADMIN
+    if str(user.id) != str(ADMIN_ID):
+        return # Ignore non-admins
+    sender_id = event.sender_id
+    
+    # Initialize state
+    ad_states[sender_id] = {
+        'state': 'waiting_content',
+        'content': [], # Stores message objects
+        'grouped_id': None # To track albums
+    }
+    
+    await event.respond(
+        "📢 **Broadcast Setup**\n\n"
+        "Please send the **Post Content** now.\n"
+        "You can send:\n"
+        "• Text\n"
+        "• Photo/Video (with caption)\n"
+        "• Album (up to 9 media items)\n\n"
+        "👉 **If sending an Album (Multiple Photos):**\n"
+        "Send them now, wait for them to upload, then send **/next** to finish.\n\n"
+        "Send /cancel to stop."
+    )
+
+@client.on(events.NewMessage(pattern='/cancel'))
+async def cancel_broadcast(event):
+    sender_id = event.sender_id
+    if sender_id in ad_states:
+        del ad_states[sender_id]
+        await event.respond("❌ Broadcast cancelled.")
+@client.on(events.NewMessage())
+async def ad_builder_handler(event):
+    """Handles the steps of building the ad (Content -> Button -> Confirm)."""
+    
+    # 1. Basic checks
+    # Allow '/next' to pass through, block other commands
+    if event.text and event.text.startswith('/') and event.text != '/next': 
+        return 
+        
+    sender_id = event.sender_id
+    if sender_id not in ad_states: return
+
+    state_data = ad_states[sender_id]
+    current_state = state_data['state']
+
+    # ==========================
+    # STEP 2: RECEIVE CONTENT
+    # ==========================
+    if current_state == 'waiting_content':
+        
+        # A) User types "/next" to finish sending an Album
+        if event.text == '/next':
+            if not state_data['content']:
+                await event.respond("⚠️ You haven't sent any content yet!")
+                return
+            
+            # Move to next step
+            state_data['state'] = 'waiting_button'
+            await event.respond(
+                "✅ **Album Received.**\n\n"
+                "Now, do you want to add a **URL Button**?\n"
+                "Send format: `Button Text - https://link.com`\n\n"
+                "Or send **'skip'** to proceed without a button."
+            )
+            return
+
+        # B) Handle Albums (Multiple media with same grouped_id)
+        if event.grouped_id:
+            if state_data['grouped_id'] != event.grouped_id:
+                state_data['grouped_id'] = event.grouped_id
+                state_data['content'] = [] # Reset if new group
+            
+            state_data['content'].append(event.message)
+            # We return here to wait for the next photo in the album.
+            # You MUST send /next when done uploading.
+            return 
+        
+        # C) Single message (Text or Single Media)
+        else:
+            state_data['content'] = [event.message]
+            # For single messages, we can auto-advance
+            state_data['state'] = 'waiting_button'
+            await event.respond(
+                "✅ **Content Received.**\n\n"
+                "Now, do you want to add a **URL Button**?\n"
+                "Send format: `Button Text - https://link.com`\n\n"
+                "Or send **'skip'** to proceed without a button."
+            )
+
+    # ==========================
+    # STEP 3: RECEIVE BUTTON
+    # ==========================
+    elif current_state == 'waiting_button':
+        text = event.text.strip()
+        
+        button = None
+        if text.lower() != 'skip':
+            if '-' in text:
+                btn_text, btn_url = text.split('-', 1)
+                button = [Button.url(btn_text.strip(), btn_url.strip())]
+            else:
+                await event.respond("⚠️ Format invalid. Use: `Text - URL` or send `skip`.")
+                return
+
+        state_data['button'] = button
+        state_data['state'] = 'waiting_confirm'
+        
+        # Generate Preview
+        preview_text = "👀 **Preview of your Ad:**\n\n"
+        await event.respond(preview_text)
+
+        msgs = state_data['content']
+        
+        try:
+            if len(msgs) > 1: # Album
+                # Send the album (text is usually in the first message's caption)
+                await client.send_message(event.chat_id, file=[m.media for m in msgs], message=msgs[0].text)
+                if button:
+                    await event.respond("👇 **Link:**", buttons=button)
+            else: # Single Msg
+                msg = msgs[0]
+                await client.send_message(
+                    event.chat_id,
+                    message=msg.text,
+                    file=msg.media,
+                    buttons=button
+                )
+        except Exception as e:
+            await event.respond(f"Error generating preview: {e}")
+            return
+
+        await event.respond(
+            "➖➖➖➖➖➖➖➖\n"
+            "📢 **Ready to Broadcast?**\n"
+            "This will send to all **Non-Premium** users.\n\n"
+            "Send **/confirm_broadcast** to start.\n"
+            "Send **/cancel** to stop."
+        )
+
+@client.on(events.NewMessage(pattern='/confirm_broadcast'))
+async def execute_broadcast(event):
+    """Step 4: Execute the sending loop."""
+    sender_id = event.sender_id
+    if sender_id not in ad_states or ad_states[sender_id]['state'] != 'waiting_confirm':
+        return await event.respond("⚠️ No broadcast pending. Start with /broadcast.")
+
+    data = ad_states[sender_id]
+    del ad_states[sender_id] # Clear state
+    
+    status_msg = await event.respond("🚀 **Starting Broadcast...**\nFetching users...")
+
+    # Fetch Non-Premium Users
+    # Note: Tortoise ORM 'filter' returns a QuerySet
+    users = await User.filter(is_premium=False).all()
+    
+    total = len(users)
+    sent = 0
+    blocked = 0
+    errors = 0
+    
+    await status_msg.edit(f"🚀 **Target:** {total} users.\nSending in background...")
+
+    # Helper to send (Handles Album vs Single logic)
+    async def send_ad(target_id):
+        msgs = data['content']
+        btn = data['button']
+        
+        if len(msgs) > 1: # Album
+            await client.send_message(target_id, file=[m.media for m in msgs], message=msgs[0].text)
+            if btn:
+                await client.send_message(target_id, "👇", buttons=btn)
+        else: # Single
+            msg = msgs[0]
+            await client.send_message(target_id, message=msg.text, file=msg.media, buttons=btn)
+
+    # Batch Processing
+    for i, user in enumerate(users):
+        try:
+            await send_ad(user.id)
+            sent += 1
+        except UserIsBlockedError:
+            blocked += 1
+            # Optional: Delete blocked user from DB to keep it clean
+            # await user.delete() 
+        except FloodWaitError as e:
+            print(f"FloodWait: Sleeping {e.seconds}s")
+            await asyncio.sleep(e.seconds)
+            try:
+                await send_ad(user.id) # Retry once
+                sent += 1
+            except:
+                errors += 1
+        except Exception as e:
+            print(f"Failed to send to {user.id}: {e}")
+            errors += 1
+        
+        # Anti-Flood Delay: Sleep 1s every 20 messages
+        if i % 20 == 0 and i > 0:
+            await asyncio.sleep(1.5) 
+            # Update admin every 100 users
+            if i % 100 == 0:
+                await status_msg.edit(f"📊 Progress: {i}/{total}\n✅ Sent: {sent}\n🚫 Blocked: {blocked}")
+
+    await client.send_message(
+        sender_id,
+        f"✅ **Broadcast Complete!**\n\n"
+        f"👥 Total Target: {total}\n"
+        f"✅ Successfully Sent: {sent}\n"
+        f"🚫 Blocked/Deleted: {blocked}\n"
+        f"⚠️ Errors: {errors}"
+    )
 
 async def main():
     print("Initializing Database...")
