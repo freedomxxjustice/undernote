@@ -110,7 +110,7 @@ async def main_handler(event):
     if event.text and event.text.startswith('/'):
         if event.text.startswith('/start'):
             welcome_text = (
-                f"✨ **Hello, {user.first_name}!**\n\n"
+                f"✨ **Hello, {str(user.first_name).replace("@", "")}!**\n\n"
                 "I am ready to create video notes with any caption you send!.\n"
                 "Just send me a video and a caption in one message!"
             )

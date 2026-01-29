@@ -100,6 +100,7 @@ async def create_crypto_invoice(amount, currency, description, payload):
     except Exception as e:
         print(f"CryptoBot Connection Error: {e}")
         return None
+    
 async def check_crypto_payments():
     """
     Background task: Checks for PAID invoices every 30 seconds.
@@ -170,7 +171,7 @@ async def start_handler(event):
     user = await register_user(event)
     
     text = (
-        f"✨ **Hello, {user.first_name}!**\n\n"
+        f"✨ **Hello, {str(user.first_name).replace("@", "")}!**\n\n"
         "I create round video notes for you with saving of entered caption.\n"
         "Send me a video and text in one message to get started!\n\n"
         "*this bot doesn't support premium emojis, instead consider buying premium subscription (covering premium account expenses) and use @undernote!*\n\n"
@@ -193,7 +194,7 @@ async def menu_handler(event):
 
     if data == "menu_main":
         text = (
-            f"✨ **Hello, {user.first_name}!**\n\n"
+            f"✨ **Hello, {str(user.first_name).replace("@", "")}!**\n\n"
             "I create round video notes for you with saving of entered caption.\n"
             "Send me a video and text in one message to get started!\n\n"
             "*this bot doesn't support premium emojis, instead consider buying premium subscription (covering premium account expenses) and use @undernote!*\n\n"
@@ -527,12 +528,12 @@ async def cancel_broadcast(event):
     if sender_id in ad_states:
         del ad_states[sender_id]
         await event.respond("❌ Broadcast cancelled.")
+
 @client.on(events.NewMessage())
 async def ad_builder_handler(event):
-    """Handles the steps of building the ad (Content -> Button -> Confirm)."""
+    """Handles the steps of building the ad (Content -> Button -> Target -> Confirm)."""
     
     # 1. Basic checks
-    # Allow '/next' to pass through, block other commands
     if event.text and event.text.startswith('/') and event.text != '/next': 
         return 
         
@@ -563,21 +564,18 @@ async def ad_builder_handler(event):
             )
             return
 
-        # B) Handle Albums (Multiple media with same grouped_id)
+        # B) Handle Albums
         if event.grouped_id:
             if state_data['grouped_id'] != event.grouped_id:
                 state_data['grouped_id'] = event.grouped_id
-                state_data['content'] = [] # Reset if new group
+                state_data['content'] = [] 
             
             state_data['content'].append(event.message)
-            # We return here to wait for the next photo in the album.
-            # You MUST send /next when done uploading.
             return 
         
-        # C) Single message (Text or Single Media)
+        # C) Single message
         else:
             state_data['content'] = [event.message]
-            # For single messages, we can auto-advance
             state_data['state'] = 'waiting_button'
             await event.respond(
                 "✅ **Content Received.**\n\n"
@@ -602,27 +600,50 @@ async def ad_builder_handler(event):
                 return
 
         state_data['button'] = button
-        state_data['state'] = 'waiting_confirm'
         
+        # --- NEW STEP: Ask for Target Audience ---
+        state_data['state'] = 'waiting_target'
+        
+        await event.respond(
+            "👥 **Select Target Audience**\n\n"
+            "Who receives this message?\n"
+            "1. Type **`free`** for Non-Premium users.\n"
+            "2. Type **`premium`** for Premium users.\n"
+            "3. Type **`all`** for Everyone."
+        )
+
+    # ==========================
+    # STEP 4: RECEIVE TARGET (NEW)
+    # ==========================
+    elif current_state == 'waiting_target':
+        choice = event.text.lower().strip()
+        
+        if choice not in ['free', 'premium', 'all']:
+            await event.respond("⚠️ Invalid choice. Please type **free**, **premium**, or **all**.")
+            return
+
+        state_data['target'] = choice
+        state_data['state'] = 'waiting_confirm'
+
         # Generate Preview
-        preview_text = "👀 **Preview of your Ad:**\n\n"
+        preview_text = f"👀 **Preview (Target: {choice.upper()}):**\n\n"
         await event.respond(preview_text)
 
         msgs = state_data['content']
+        btn = state_data['button']
         
         try:
             if len(msgs) > 1: # Album
-                # Send the album (text is usually in the first message's caption)
                 await client.send_message(event.chat_id, file=[m.media for m in msgs], message=msgs[0].text)
-                if button:
-                    await event.respond("👇 **Link:**", buttons=button)
+                if btn:
+                    await event.respond("👇 **Link:**", buttons=btn)
             else: # Single Msg
                 msg = msgs[0]
                 await client.send_message(
                     event.chat_id,
                     message=msg.text,
                     file=msg.media,
-                    buttons=button
+                    buttons=btn
                 )
         except Exception as e:
             await event.respond(f"Error generating preview: {e}")
@@ -631,33 +652,41 @@ async def ad_builder_handler(event):
         await event.respond(
             "➖➖➖➖➖➖➖➖\n"
             "📢 **Ready to Broadcast?**\n"
-            "This will send to all **Non-Premium** users.\n\n"
+            f"Target: **{choice.upper()} Users**\n\n"
             "Send **/confirm_broadcast** to start.\n"
             "Send **/cancel** to stop."
         )
-
-@client.on(events.NewMessage(pattern='/confirm_broadcast'))
+        @client.on(events.NewMessage(pattern='/confirm_broadcast'))
 async def execute_broadcast(event):
-    """Step 4: Execute the sending loop."""
+    """Step 5: Execute the sending loop."""
     sender_id = event.sender_id
     if sender_id not in ad_states or ad_states[sender_id]['state'] != 'waiting_confirm':
         return await event.respond("⚠️ No broadcast pending. Start with /broadcast.")
 
     data = ad_states[sender_id]
+    target_audience = data.get('target', 'free') # Default to free just in case
+    
     del ad_states[sender_id] # Clear state
     
-    status_msg = await event.respond("🚀 **Starting Broadcast...**\nFetching users...")
+    status_msg = await event.respond(f"🚀 **Starting Broadcast ({target_audience.upper()})...**\nFetching users...")
 
-    # Fetch Non-Premium Users
-    # Note: Tortoise ORM 'filter' returns a QuerySet
-    users = await User.filter(is_premium=False).all()
+    # --- FILTER USERS BASED ON SELECTION ---
+    if target_audience == 'premium':
+        # Send ONLY to Premium
+        users = await User.filter(is_premium=True).all()
+    elif target_audience == 'all':
+        # Send to EVERYONE
+        users = await User.all()
+    else:
+        # Send ONLY to Non-Premium (Default)
+        users = await User.filter(is_premium=False).all()
     
     total = len(users)
     sent = 0
     blocked = 0
     errors = 0
     
-    await status_msg.edit(f"🚀 **Target:** {total} users.\nSending in background...")
+    await status_msg.edit(f"🚀 **Target:** {total} users ({target_audience}).\nSending in background...")
 
     # Helper to send (Handles Album vs Single logic)
     async def send_ad(target_id):
@@ -679,8 +708,6 @@ async def execute_broadcast(event):
             sent += 1
         except UserIsBlockedError:
             blocked += 1
-            # Optional: Delete blocked user from DB to keep it clean
-            # await user.delete() 
         except FloodWaitError as e:
             print(f"FloodWait: Sleeping {e.seconds}s")
             await asyncio.sleep(e.seconds)
@@ -703,6 +730,7 @@ async def execute_broadcast(event):
     await client.send_message(
         sender_id,
         f"✅ **Broadcast Complete!**\n\n"
+        f"🎯 Target: {target_audience.upper()}\n"
         f"👥 Total Target: {total}\n"
         f"✅ Successfully Sent: {sent}\n"
         f"🚫 Blocked/Deleted: {blocked}\n"
