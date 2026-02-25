@@ -28,7 +28,6 @@ async def start_all():
     await init_db()
     
     print("🚀 Launching Bots & Server...")
-    # Run the bot, userbot, AND the dummy server together
     await asyncio.gather(
         run_bot(),
         run_userbot(),

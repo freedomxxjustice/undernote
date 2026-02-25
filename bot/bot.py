@@ -14,7 +14,6 @@ load_dotenv()
 API_ID = int(os.getenv('API_ID'))       
 API_HASH = os.getenv('API_HASH')
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN') 
 DB_URL = os.getenv('DB_URL')
 ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin') 
 ADMIN_ID = os.getenv('ADMIN_ID', '012345678') 
@@ -26,25 +25,6 @@ client = TelegramClient('bot_session_db', API_ID, API_HASH)
 ad_states = {}
 INVOICE_FILE = "processed_invoices.txt"
 
-def load_processed_invoices():
-    """Loads invoice IDs from a file on startup."""
-    if not os.path.exists(INVOICE_FILE):
-        return set()
-    with open(INVOICE_FILE, "r") as f:
-        # Read lines, strip whitespace, and return as a set
-        return set(line.strip() for line in f if line.strip())
-
-def save_invoice_id(invoice_id):
-    """Appends a new invoice ID to the file."""
-    try:
-        with open(INVOICE_FILE, "a") as f:
-            f.write(f"{invoice_id}\n")
-    except Exception as e:
-        print(f"Error saving invoice ID: {e}")
-
-# Initialize the set from the file instead of creating an empty one
-processed_invoices = load_processed_invoices()
-print(f"📂 Loaded {len(processed_invoices)} processed invoices from file.")
 
 async def register_user(event):
     """Ensures user exists in DB on every interaction."""
@@ -59,112 +39,6 @@ async def register_user(event):
     )
     return user
 
-async def create_crypto_invoice(amount, currency, description, payload):
-    """
-    Creates an invoice using CryptoPay API with Fiat support.
-    currency: 'RUB', 'USD', 'EUR' (Fiat) OR 'USDT', 'TON' (Crypto)
-    """
-    if not CRYPTO_BOT_TOKEN:
-        print("Error: CRYPTO_BOT_TOKEN is missing in .env")
-        return None
-        
-    url = "https://pay.crypt.bot/api/createInvoice"
-    headers = {'Crypto-Pay-API-Token': CRYPTO_BOT_TOKEN}
-    
-    data = {
-        "amount": str(amount),
-        "description": description,
-        "payload": payload,
-        "allow_comments": False,
-        "allow_anonymous": False,
-        "expires_in": 3600 # 1 hour
-    }
-
-    known_crypto_assets = ["USDT", "TON", "BTC", "ETH", "USDC", "LTC", "BNB"]
-    
-    if currency.upper() in known_crypto_assets:
-        data["asset"] = currency.upper()
-        data["currency_type"] = "crypto"
-    else:
-        data["fiat"] = currency.upper()
-        data["currency_type"] = "fiat"
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=data, headers=headers) as response:
-                result = await response.json()
-                if result.get('ok'):
-                    return result['result']
-                print(f"CryptoBot API Error: {result}")
-                return None
-    except Exception as e:
-        print(f"CryptoBot Connection Error: {e}")
-        return None
-    
-async def check_crypto_payments():
-    """
-    Background task: Checks for PAID invoices every 30 seconds.
-    """
-    print("✅ Crypto Payment Monitor Started...")
-    url = "https://pay.crypt.bot/api/getInvoices"
-    headers = {'Crypto-Pay-API-Token': CRYPTO_BOT_TOKEN}
-
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                # We fetch the last 20 paid invoices
-                params = {'status': 'paid', 'count': 20}
-                async with session.get(url, headers=headers, params=params) as response:
-                    data = await response.json()
-                    
-                    if data.get('ok'):
-                        invoices = data['result']['items']
-                        
-                        for inv in invoices:
-                            invoice_id = str(inv['invoice_id']) # Ensure it's a string
-                            payload = inv.get('payload', '')
-
-                            # 1. Check if we already processed this ID
-                            if invoice_id in processed_invoices:
-                                continue
-                            
-                            # 2. Add to memory AND save to file immediately
-                            processed_invoices.add(invoice_id)
-                            save_invoice_id(invoice_id)
-                            
-                            # 3. Process the premium activation
-                            if payload and payload.startswith('premium_sub_'):
-                                try:
-                                    user_id = int(payload.split('_')[-1])
-                                    
-                                    user = await User.get_or_none(id=user_id)
-                                    if user:
-                                        user.is_premium = True
-                                        
-                                        current_expiry = user.premium_expiry_date
-                                        if current_expiry and current_expiry > date.today():
-                                            user.premium_expiry_date = current_expiry + timedelta(days=365)
-                                        else:
-                                            user.premium_expiry_date = date.today() + timedelta(days=365)
-                                            
-                                        await user.save()
-                                        
-                                        await client.send_message(
-                                            user_id,
-                                            "🎉 **Payment Received (Crypto)!**\n\n"
-                                            "You are now a Premium user for 1 Year.\n"
-                                            "Thank you for your support!"
-                                        )
-                                        print(f"💰 Crypto Premium Activated for {user_id} (Inv: {invoice_id})")
-                                        
-                                except Exception as inner_e:
-                                    print(f"Error activating user {payload}: {inner_e}")
-
-            await asyncio.sleep(30)
-            
-        except Exception as e:
-            print(f"Crypto Monitor Error: {e}")
-            await asyncio.sleep(30)
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
@@ -244,14 +118,9 @@ async def menu_handler(event):
                 "✅ No ads\n\n"
                 "✅ !!! Access to @undernote bot, that supports premium emojis as captions\n\n"
                 "**Select a payment method:**\n"
-                "• 🇷🇺 RUB: 99₽ (via Crypto)\n"
-                "• 🌍 USD: $1.70 (via Crypto)\n"
                 "• ⭐️ Stars: 100"
             )
             buttons = [
-                [Button.inline("🇷🇺 Pay 99 RUB", data=b"buy_crypto_rub"),
-                 Button.inline("🌍 Pay $1.70", data=b"buy_crypto_usd")],
-                
                 [Button.inline("⭐️ Pay 100 Stars", data=b"buy_stars")],
                 [Button.inline("🔙 Back", data=b"menu_main")]
             ]
@@ -285,45 +154,6 @@ async def menu_handler(event):
             print(f"Stars Error: {e}")
             await event.respond(f"Error creating Stars invoice: {e}")
 
-    elif data == "buy_crypto_rub":
-        await event.answer("Generating Link (RUB)...", alert=False)
-        
-        invoice = await create_crypto_invoice(
-            amount=99.00,
-            currency="RUB",
-            description="Premium Subscription (1 Year)",
-            payload=f"premium_sub_{sender_id}"
-        )
-        
-        if invoice:
-            pay_url = invoice['bot_invoice_url']
-            await event.respond(
-                "💳 **Pay 99 RUB via Crypto**\n\n"
-                "The bot will automatically convert RUB to USDT/TON for you.",
-                buttons=[[Button.url("👉 Pay 99 RUB", pay_url)]]
-            )
-        else:
-            await event.respond("⚠️ Error generating invoice. Please check bot settings.")
-
-    elif data == "buy_crypto_usd":
-        await event.answer("Generating Link (USD)...", alert=False)
-        
-        invoice = await create_crypto_invoice(
-            amount=1.70,
-            currency="USD",
-            description="Premium Subscription (1 Year)",
-            payload=f"premium_sub_{sender_id}"
-        )
-        
-        if invoice:
-            pay_url = invoice['bot_invoice_url']
-            await event.respond(
-                "💳 **Pay $1.70 via Crypto**\n\n"
-                "The bot will automatically convert USD to USDT/TON for you.",
-                buttons=[[Button.url("👉 Pay $1.70", pay_url)]]
-            )
-        else:
-            await event.respond("⚠️ Error generating invoice. Please check bot settings.")
 
 def process_video_v2(input_path, output_path):
     command = [
@@ -744,8 +574,6 @@ async def main():
     print("Starting Bot...")
     await client.start(bot_token=BOT_TOKEN)
     
-
-    client.loop.create_task(check_crypto_payments())
 
     print("Bot is running. Press Ctrl+C to stop.")
     await client.run_until_disconnected()
